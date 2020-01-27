@@ -3,12 +3,13 @@ import base64
 import enum
 import logging
 import platform
+import traceback
 from configparser import ConfigParser
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
-from bleak import BleakClient
+from bleak import BleakClient, discover
 
 from huawei.protocol import Command, GATT_READ, GATT_WRITE, Packet, check_result, generate_nonce, hexlify, \
     initialization_vector
@@ -98,13 +99,18 @@ class Band:
         logger.debug(f"Parsed response packet: {self._packet}")
 
         assert self.state.name.startswith("Requested"), "unexpected packet"
-        self._event.set()
+        logger.debug("Setting event")
+        self.loop.call_soon_threadsafe(self._event.set())
+        logger.debug("Event set")
 
     async def _process_response(self, request: Packet, func: Callable, new_state: BandState):
         logger.debug(f"Waiting for response from service_id={request.service_id}, command_id={request.command_id}...")
 
+        logger.debug("Awaiting event")
         await self._event.wait()
+        logger.debug("Clearing event")
         self._event.clear()
+        logger.debug("Event cleared")
 
         assert (self._packet.service_id, self._packet.command_id) == (request.service_id, request.command_id)
         result = func(self._packet.command)
@@ -242,38 +248,48 @@ async def run(config, loop):
     device_mac = config["device_mac"]
     client_mac = config["client_mac"]
 
-    async with BleakClient(device_mac if platform.system() != "Darwin" else device_uuid, loop=loop) as client:
-        band = Band(loop=loop, client=client, client_mac=client_mac, device_mac=device_mac, key=secret)
+    #devices = await discover()
+    #for d in devices:
+    #    print(d)
 
-        await band.connect()
-        await band.handshake()
+    while 1:
+        try:
+            async with BleakClient(device_mac if platform.system() != "Darwin" else device_uuid, loop=loop) as client:
+                band = Band(loop=loop, client=client, client_mac=client_mac, device_mac=device_mac, key=secret)
 
-        # await band.factory_reset()
+                await band.connect()
+                await band.handshake()
 
-        battery_level = await band.get_battery_level()
-        logger.info(f"Battery level: {battery_level}")
+                # await band.factory_reset()
 
-        await band.set_right_wrist(False)
-        await band.set_rotation_actions()
-        await band.set_time()
-        await band.set_locale("en-US", locale_config.MeasurementSystem.Metric)
-        await band.set_date_format(device_config.DateFormat.YearFirst, device_config.TimeFormat.Hours24)
+                battery_level = await band.get_battery_level()
+                logger.info(f"Battery level: {battery_level}")
 
-        await band.set_user_info(
-            int(config.get("height", 170)), int(config.get("weight", 60)), fitness.Sex(int(config.get("sex", 1))),
-            date.fromisoformat(config.get("birth_date", "1990-08-01")),
-        )
+                await band.set_right_wrist(False)
+                await band.set_rotation_actions()
+                await band.set_time()
+                await band.set_locale("en-US", locale_config.MeasurementSystem.Metric)
+                await band.set_date_format(device_config.DateFormat.YearFirst, device_config.TimeFormat.Hours24)
 
-        await band.enable_trusleep(True)
-        await band.enable_heart_rate_monitoring(False)
+                await band.set_user_info(
+                    int(config.get("height", 170)), int(config.get("weight", 60)), fitness.Sex(int(config.get("sex", 1))),
+                    date.fromisoformat(config.get("birth_date", "1990-08-01")),
+                )
 
-        today_totals = await band.get_today_totals()
-        logger.info(f"Today totals: {today_totals}")
+                await band.enable_trusleep(True)
+                await band.enable_heart_rate_monitoring(False)
 
-        # await band.send_notification("Really nice to see you ^__^", "Hello, World!",
-        #                              vibrate=True, notification_type=NotificationType.Email)
+                today_totals = await band.get_today_totals()
+                logger.info(f"Today totals: {today_totals}")
 
-        await band.disconnect()
+                # await band.send_notification("Really nice to see you ^__^", "Hello, World!",
+                #                              vibrate=True, notification_type=NotificationType.Email)
+
+                await band.disconnect()
+                break;
+        except:
+            traceback.print_exc()
+            continue;
 
 
 def main():
@@ -282,8 +298,8 @@ def main():
     if not CONFIG_FILE.exists():
         config[DEVICE_NAME] = {
             "device_uuid": "A0E49DB2-XXXX-XXXX-XXXX-D75121192329",
-            "device_mac": "6C:B7:49:XX:XX:XX",
-            "client_mac": "C4:B3:01:XX:XX:XX",
+            "device_mac": "E4:19:C1:C1:0D:78",
+            "client_mac": "28:39:26:63:7D:30",
             "secret": base64.b64encode(generate_nonce()).decode(),
         }
 
